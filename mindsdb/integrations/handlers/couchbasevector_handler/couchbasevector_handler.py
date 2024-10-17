@@ -360,16 +360,14 @@ class CouchbaseVectorHandler(VectorStoreHandler):
             raise Exception(f"Error while performing delete query index: '{e}'")
 
     def create_table(self, table_name: str, if_not_exists=True):
-        """
-        In Couchbase, tables are represented as collections within a bucket.
-        This method creates a new collection if it doesn't exist.
-        """
         cluster = self.connect()
         bucket = cluster.bucket(self.bucket_name)
-        scope = bucket.scope(self.scope)
-        _ = scope.collection(table_name)
+        scope = bucket.scope(self.scope)  
         try:
-            bucket.collections().create_collection(scope_name="color", collection_name=table_name)
+            bucket.collections().create_collection(
+                scope_name=self.scope, 
+                collection_name=table_name
+            )
         except Exception as e:
             raise Exception(f"Error while creating table: '{e}'")
 
