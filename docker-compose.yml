@@ -1,42 +1,51 @@
 services:
-
-  mindsdb:
-    image: mindsdb/mindsdb:devel
-    # If you want to build the image instead:
-    # build:
-    #   context: .
-    #   dockerfile: docker/mindsdb.Dockerfile
-    #   target: dev  # Makes sure dev dependencies are installed
-    restart: always
-    ports:
-      - '47334:47334'
-      - '47335:47335'
-      - '47336:47336'
-    # watchfiles will reload the app when python files are changed
-    entrypoint: bash -c "watchfiles --filter python 'python -m mindsdb' ."
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
     environment:
-      MINDSDB_DOCKER_ENV: "True"
-      MINDSDB_STORAGE_DIR: "/mindsdb/var"
-      FLASK_DEBUG: 1  # This will make sure http requests are logged regardless of log level
-      SENTRY_IO_DSN: ""
-      SENTRY_IO_ENVIRONMENT: "local"
-      # SENTRY_IO_FORCE_RUN: "true" # Uncomment me to force-start sentry on local development. Good for profiling, but may annoy other devs on sentry.io with the "noise"
-      # MINDSDB_LOG_LEVEL: "DEBUG"
-      # OPENAI_API_KEY: "..."
-      LANGFUSE_HOST: "OMITTED_FOR_SECURITY"
-      LANGFUSE_PUBLIC_KEY: "OMITTED_FOR_SECURITY"
-      LANGFUSE_SECRET_KEY: "OMITTED_FOR_SECURITY"
-      LANGFUSE_RELEASE: "local"
-      # LANGFUSE_DEBUG: "True"
-      LANGFUSE_TIMEOUT: "10"
-      LANGFUSE_SAMPLE_RATE: "1.0"
-
+      COWORK_SERVER_HOST: "0.0.0.0"
+      COWORK_SERVER_PORT: "26866"
+      DATABASE_URI: "sqlite:////home/cowork/.cowork/cowork.db"
+      # ANTON_ANTHROPIC_API_KEY: "sk-ant-..."
     volumes:
-      - type: bind
-        source: .
-        target: /mindsdb
+      - cowork-data:/home/cowork/.cowork
+    # ENG-459: do NOT publish 26866 to the host. Publishing it exposed the raw,
+    # unauthenticated API directly, bypassing nginx. `expose` keeps the port
+    # reachable only on the compose network. NOTE: the nginx /v1/ path is
+    # itself still unauthenticated until app-layer auth
+    # (COWORK_REQUIRE_AUTH / bearer-token-auth) lands.
+    expose:
+      - "26866"
+    # ENG-457: `web` now shares this container's network namespace (see
+    # below), so the host's published port lands here instead of on `web`.
+    ports:
+      - "3000:80"
+    restart: unless-stopped
     healthcheck:
-      test:  ["CMD", "curl", "-f", "http://localhost:47334/api/util/ping"]
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:26866/health',timeout=3).status==200 else 1)"]
       interval: 30s
-      timeout: 4s
-      retries: 100
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+    # ENG-457: share api's network namespace so nginx's proxy to cowork-server
+    # is a genuine loopback hop (127.0.0.1), not a separate-container bridge
+    # hop. cowork-server's `_require_local` guard on /settings/reveal-key and
+    # /raw only allows loopback callers. On the default bridge network the
+    # proxied request would arrive as this container's bridge IP and get
+    # 403'd, breaking onboarding's calls to those endpoints.
+    network_mode: "service:api"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  cowork-data:
+    driver: local
